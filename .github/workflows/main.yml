@@ -11,40 +11,21 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
 
-          # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User with Fixed Password
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          # Password diatur tetap (Tidak random lagi)
+          # Menggunakan kombinasi karena Windows mewajibkan password yang kuat/complex
+          $password = "RDPdoang123!" 
+          
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
@@ -57,6 +38,34 @@ jobs:
               exit 1
           }
 
+      - name: Install VS Code and Update Dev Tools (Nodejs, Python, Git)
+        run: |
+          Write-Host "Menginstal VS Code..."
+          winget install --id Microsoft.VisualStudioCode --silent --accept-source-agreements --accept-package-agreements
+          
+          Write-Host "Mengupdate Node.js, Python, dan Git ke versi terbaru..."
+          winget upgrade --id OpenJS.NodeJS --silent --accept-source-agreements --accept-package-agreements --upgrade-arguments "/passive"
+          winget upgrade --id Python.Python.3 --silent --accept-source-agreements --accept-package-agreements
+          winget upgrade --id Git.Git --silent --accept-source-agreements --accept-package-agreements
+
+      - name: Setup Custom Wallpaper for RDP User
+        run: |
+          # Menggunakan URL Raw dari link yang kamu berikan
+          $wallpaperUrl = "https://raw.githubusercontent.com/Kallxy1/RdpKal/4fc596f566d4cc9310f17262be6f5935887723bb/walpaperkal.png"
+          $wallpaperPath = "C:\Users\Public\Pictures\wallpaper.png"
+          
+          Write-Host "Downloading wallpaper..."
+          Invoke-WebRequest -Uri $wallpaperUrl -OutFile $wallpaperPath
+          
+          # Force registry agar user 'RDP' otomatis pakai wallpaper ini saat login
+          reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background" /v "OEMBackground" /t REG_DWORD /d 1 /f
+          
+          # Mengatur wallpaper di level system default profil agar user baru langsung otomatis terpasang
+          reg load HKEY_USERS\DefaultCustom "C:\Users\Default\NTUSER.DAT"
+          reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "Wallpaper" /t REG_SZ /d "$wallpaperPath" /f
+          reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "WallpaperStyle" /t REG_SZ /d "2" /f
+          reg unload HKEY_USERS\DefaultCustom
+
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -68,10 +77,8 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
@@ -80,7 +87,7 @@ jobs:
               $retries++
           }
 
-                    if (-not $tsIP) {
+          if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
@@ -89,8 +96,6 @@ jobs:
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
@@ -106,7 +111,6 @@ jobs:
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
