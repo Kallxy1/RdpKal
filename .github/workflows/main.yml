@@ -20,18 +20,28 @@ jobs:
 
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Fixed Password
+      - name: Create RDP User with Secure Password
         run: |
-          # Hapus user lama jika ada (mencegah error saat re-run)
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name "RDP" -Force
           }
 
-          # Password statis yang dijamin lolos Windows Complexity Policy (100% Aman)
-          $password = "RahasiaRDP2026!#" 
-          
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -Description "RDP User"
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
@@ -54,17 +64,14 @@ jobs:
 
       - name: Setup Custom Wallpaper for RDP User
         run: |
-          # Menggunakan URL Raw dari link yang kamu berikan
           $wallpaperUrl = "https://raw.githubusercontent.com/Kallxy1/RdpKal/4fc596f566d4cc9310f17262be6f5935887723bb/walpaperkal.png"
           $wallpaperPath = "C:\Users\Public\Pictures\wallpaper.png"
           
           Write-Host "Downloading wallpaper..."
           Invoke-WebRequest -Uri $wallpaperUrl -OutFile $wallpaperPath
           
-          # Force registry agar user 'RDP' otomatis pakai wallpaper ini saat login
           reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background" /v "OEMBackground" /t REG_DWORD /d 1 /f
           
-          # Mengatur wallpaper di level system default profil agar user baru langsung otomatis terpasang
           reg load HKEY_USERS\DefaultCustom "C:\Users\Default\NTUSER.DAT"
           reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "Wallpaper" /t REG_SZ /d "$wallpaperPath" /f
           reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "WallpaperStyle" /t REG_SZ /d "2" /f
