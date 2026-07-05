@@ -22,12 +22,16 @@ jobs:
 
       - name: Create RDP User with Fixed Password
         run: |
-          # Password diatur tetap (Tidak random lagi)
-          # Menggunakan kombinasi karena Windows mewajibkan password yang kuat/complex
-          $password = "RDPdoang123!" 
+          # Hapus user lama jika ada (mencegah error saat re-run)
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name "RDP" -Force
+          }
+
+          # Password statis yang dijamin lolos Windows Complexity Policy (100% Aman)
+          $password = "RahasiaRDP2026!#" 
           
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -Description "RDP User"
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
