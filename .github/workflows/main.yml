@@ -6,28 +6,28 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360 # GitHub Actions maximum job timeout is 360 minutes (6 hours)
+    timeout-minutes: 360 # GitHub membatasi pengerjaan runner maksimal 6 jam (360 menit)
 
     steps:
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          # Ensure Remote Desktop service is enabled and started
+          # Pastikan service RDP diaktifkan dan berjalan
           Set-Service -Name TermService -StartupType Automatic
           Start-Service -Name TermService -WarningAction SilentlyContinue
 
-          # Enable RDP and configure security
+          # Konfigurasi Registry RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
 
-          # Configure Firewall using Native PowerShell Command
+          # Hapus dan buat ulang rule firewall secara aman menggunakan native cmdlet PowerShell
           Remove-NetFirewallRule -DisplayName "RDP-Tailscale" -ErrorAction SilentlyContinue
           New-NetFirewallRule -DisplayName "RDP-Tailscale" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389
 
           Restart-Service -Name TermService -Force
 
-      - name: Setup Custom Wallpaper (Must run BEFORE creating the user)
+      - name: Setup Custom Wallpaper (Jalankan SEBELUM user RDP dibuat)
         shell: pwsh
         run: |
           $wallpaperUrl = "https://raw.githubusercontent.com/Kallxy1/RdpKal/4fc596f566d4cc9310f17262be6f5935887723bb/walpaperkal.png"
@@ -39,7 +39,7 @@ jobs:
           
           reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background" /v "OEMBackground" /t REG_DWORD /d 1 /f
           
-          # Modify the Default User profile so the new RDP user inherits the wallpaper
+          # Load profil Default User untuk di-inject wallpaper (akan diwarisi oleh user baru)
           reg load HKEY_USERS\DefaultCustom "C:\Users\Default\NTUSER.DAT"
           reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "Wallpaper" /t REG_SZ /d "$wallpaperPath" /f
           reg add "HKEY_USERS\DefaultCustom\Control Panel\Desktop" /v "WallpaperStyle" /t REG_SZ /d "2" /f
@@ -48,16 +48,15 @@ jobs:
       - name: Create RDP User with Secure Password
         shell: pwsh
         run: |
-          # Check and delete existing "RDP" user (Removed invalid -Force parameter)
+          # Periksa dan hapus user "RDP" lama jika ada (tanpa parameter -Force yang tidak valid)
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name "RDP"
           }
 
-          # Generate password without problematic characters like ", ', $, `, or \ to prevent interpolation issues
+          # Hindari karakter ", ', $, `, dan \ agar tidak merusak formatting string
           $upper   = [char[]](65..90)      # A-Z
           $lower   = [char[]](97..122)     # a-z
           $number  = [char[]](48..57)      # 0-9
-          # Define safe special characters (avoiding ", ', $, `, and \)
           $special = [char[]]"!@#%^&*()-_=+[]{}|;:,.<>/?"
 
           $rawPassword = @()
@@ -66,20 +65,19 @@ jobs:
           $rawPassword += $number | Get-Random -Count 4
           $rawPassword += $special | Get-Random -Count 4
           
-          # Shuffle password
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          # Create and configure the user
+          # Daftarkan user baru
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # Write password directly to GITHUB_ENV
+          # Simpan ke env variable GitHub Actions secara aman
           Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD=$password"
           
           if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
+              Write-Error "Gagal membuat user lokal RDP"
               exit 1
           }
 
@@ -87,31 +85,29 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Menginstal VS Code..."
-          # Install VS Code using the official web installer (faster and 100% reliable)
+          # Menggunakan web installer resmi, jauh lebih cepat dan andal daripada winget db di runner non-interaktif
           $vscodeUrl = "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user"
           $installerPath = "$env:TEMP\vscode-setup.exe"
           Invoke-WebRequest -Uri $vscodeUrl -OutFile $installerPath
           Start-Process $installerPath -ArgumentList "/verysilent", "/mergetasks=!runcode" -Wait
           Remove-Item $installerPath -Force
-          Write-Host "VS Code berhasil diinstal."
+          Write-Host "VS Code sukses diinstal."
           
-          # NOTE: Node.js, Python, dan Git SUDAH pre-installed di runner windows-latest.
-          # Mengupgradenya via winget saat workflow berjalan sangat lambat, tidak perlu, dan berisiko merusak runner.
+          # Catatan: Node.js, Python, dan Git SUDAH terinstal di image runner secara bawaan, tidak perlu diupgrade.
 
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          # Menggunakan Chocolatey untuk mengambil versi stabil paling baru
+          choco install tailscale -y --no-progress
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          # Memperbarui cache environment path agar program langsung bisa dijalankan
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
       - name: Establish Tailscale Connection
         shell: pwsh
         run: |
-          # Run Tailscale Up safely
+          # Menjalankan tailscale up dengan aman
           $arguments = @(
             "up",
             "--authkey=${{ secrets.TAILSCALE_AUTH_KEY }}",
@@ -122,7 +118,7 @@ jobs:
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              # Redirect stderr to avoid breaking due to GHA ErrorActionPreference
+              # Saring error action preference agar tidak crash saat mencari IP
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
               if ($tsIP) {
                   $tsIP = $tsIP.Trim()
@@ -132,7 +128,7 @@ jobs:
           }
 
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+              Write-Error "Gagal mendapatkan IP Tailscale."
               exit 1
           }
           
@@ -143,7 +139,7 @@ jobs:
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
-          # Retry loop to wait for RDP port 3389 to open
+          # Menunggu hingga service RDP siap menerima koneksi port 3389
           $portOpen = $false
           for ($i = 1; $i -le 6; $i++) {
               $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
@@ -151,26 +147,26 @@ jobs:
                   $portOpen = $true
                   break
               }
-              Write-Host "Waiting for RDP port 3389 to open (Attempt $i/6)..."
+              Write-Host "Mencoba tes koneksi ke port RDP 3389 (Percobaan $i/6)..."
               Start-Sleep -Seconds 5
           }
           
           if (-not $portOpen) {
-              Write-Error "TCP connection to RDP port 3389 failed"
+              Write-Error "Koneksi TCP ke port RDP 3389 gagal diinisialisasi"
               exit 1
           }
-          Write-Host "TCP connectivity successful!"
+          Write-Host "Koneksi TCP sukses!"
 
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $env:RDP_PASSWORD"
-          Write-Host "==================`n"
+          Write-Host "`n=== INFORMASI AKSES RDP ==="
+          Write-Host "Alamat IP Tailscale : $env:TAILSCALE_IP"
+          Write-Host "Username           : RDP"
+          Write-Host "Password           : $env:RDP_PASSWORD"
+          Write-Host "==========================`n"
           
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Write-Host "[$(Get-Date)] RDP Aktif - Gunakan Ctrl+C pada workflow untuk mematikan"
               Start-Sleep -Seconds 300
           }
